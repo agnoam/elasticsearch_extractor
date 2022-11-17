@@ -54,10 +54,26 @@ def data_handling(client: Elasticsearch, scroll_id: str, scroll_time: str='10m')
     return data['_scroll_id'], data['hits']['hits']
 
 def export_to_csv(saving_dir: str, data: list[dict[str, Any]], file_count: int, index_name: str='scrolled_index') -> None:
+    '''
+        Exporting the data found from the scroll
+        args:
+            saving_dir: str - Path to save the file to 
+            data: list[dict[str, Any]] - The json array content to save as csv
+            file_count: int - The number of the file (for the name)
+            index_name: str - The index name for the file name
+    '''
     df: pd.DataFrame = pd.json_normalize(data)
     df.to_csv(os.path.join(saving_dir, f'{index_name}.{file_count}.csv'))
 
 def thread_runner(client: Elasticsearch, batch_size: int) -> None:
+    '''
+        Thread logic
+
+        args:
+            client: Elasticsearch - Elasticsearch client
+            batch_size: int - Number of documents to process in one request (in scroll)
+    '''
+
     global LAST_SCROLL_ID
     global IS_LAST
     global SCROLL_COUNT
@@ -76,6 +92,12 @@ def thread_runner(client: Elasticsearch, batch_size: int) -> None:
         SCROLL_COUNT += 1
 
 def main(args: Arguments) -> None:
+    '''
+        Main script function
+        args:
+            args: Arguments - all the arguments passed from the user
+    '''
+
     print('args are:', args)
     client = Elasticsearch(args.host or 'http://10.0.0.10:30000')
     print('Elasticsearch client created successfully')
