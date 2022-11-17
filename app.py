@@ -1,7 +1,8 @@
 import os
 import argparse
-from typing import Final, Any, Tuple
-# from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Tuple
+from concurrent.futures import ThreadPoolExecutor, wait
+from time import sleep
 
 from elasticsearch import Elasticsearch
 import pandas as pd
@@ -56,30 +57,50 @@ def export_to_csv(saving_dir: str, data: list[dict[str, Any]], file_count: int, 
     df: pd.DataFrame = pd.json_normalize(data)
     df.to_csv(os.path.join(saving_dir, f'{index_name}.{file_count}.csv'))
 
+def thread_runner(client: Elasticsearch, batch_size: int) -> None:
+    global LAST_SCROLL_ID
+    global IS_LAST
+    global SCROLL_COUNT
+
+    if not IS_LAST:
+        next_scroll_id, all_data = data_handling(client, LAST_SCROLL_ID)
+        export_to_csv(args.output, all_data, SCROLL_COUNT)
+
+        # Updating the scroll id
+        LAST_SCROLL_ID = next_scroll_id
+        
+        # Check whether is the last scroll
+        IS_LAST = True if len(all_data) < batch_size else False
+        
+        # Update counter
+        SCROLL_COUNT += 1
 
 def main(args: Arguments) -> None:
     print('args are:', args)
-    # TODO: Delete the hardcoded line below
-    client = Elasticsearch('http://10.0.0.10:30000')
-    # client = Elasticsearch(args.host or 'http://10.0.0.10:30000')
+    client = Elasticsearch(args.host or 'http://10.0.0.10:30000')
     print('Elasticsearch client created successfully')
 
-    # TODO: Delete the hardcoded line below
-    scroll_id: Final[str] = get_scroll_id(client, 'kibana_sample_data_logs')
-    # scroll_id: Final[str] = get_scroll_id(client, args.index)
+    os.makedirs(args.output, exist_ok=True)
+    print('Output directory created successfully')
+
+    global LAST_SCROLL_ID
+    LAST_SCROLL_ID = get_scroll_id(client, args.index) 
 
     # -----------------------------------------------------------------
 
     # Create thread per page and generate .csv file from it
-    # thread_pool_executor = ThreadPoolExecutor(max_workers=args.max_workers)
-    # thread_pool_executor.submit()
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        futures: list = []
 
-    all_data: list[dict] = data_handling(client, scroll_id)
-    # export_to_csv(args.output, all_data)
-    
-    # TODO: Change LAST_SCROLL_ID
-    # TODO: Check whether is the last scroll
-    # TODO: Update counter
+        while not IS_LAST:
+            print('create new thread')
+            future = executor.submit(thread_runner, client, args.batch_size)
+            futures.append(future)
+            
+            sleep(.5)
+
+        wait(futures)
+        
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -99,6 +120,11 @@ if __name__ == '__main__':
         '-eh', '--host',
         default='http://localhost:9200',
         help='The elasticsearch host to export the index from'
+    )
+    parser.add_argument(
+        '-bs', '--batch-size',
+        default=1000,
+        help='How much documents to parse in each time'
     )
     parser.add_argument(
         '-mw', '--max-workers', default=10,
