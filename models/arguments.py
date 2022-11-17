@@ -6,4 +6,4 @@ class Arguments:
     host: str
     max_workers: int
     batch_size: int
-    output_dir: str
+    output: str
