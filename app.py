@@ -1,5 +1,6 @@
 import os
 import argparse
+import time
 from typing import Any, Tuple
 from concurrent.futures import ThreadPoolExecutor, wait
 from time import sleep
@@ -9,11 +10,12 @@ import pandas as pd
 
 from models.arguments import Arguments
 
-IS_LAST: bool = False
 LAST_SCROLL_ID: str = None
 SCROLL_COUNT: int = 0
+DOCUMENT_NEEDED: int = -1
+DOCUMENT_READ: int = -1
 
-def get_scroll_id(client: Elasticsearch, index_name: str, scroll_time: str='10m', batch_size: int=1000) -> str:
+def get_scroll_id(client: Elasticsearch, index_name: str, scroll_time: str='10m', batch_size: int=1000) -> Tuple[int, str, list[dict[str, Any]]]:
     '''
         Get scroll_id from elasticsearch index
         args:
@@ -22,7 +24,10 @@ def get_scroll_id(client: Elasticsearch, index_name: str, scroll_time: str='10m'
             scroll_time: str - How much time to save elasticsearch's scroll context (in minutes)
             batch_size: int - How much documents to retrive in each scroll
 
-        returns: Elasticsearch's scroll_id to run of
+        returns: 
+            Tuple[0] - The number of total documents to retrive
+            Tuple[1] - Elasticsearch's scroll_id to run of
+            Tuple[2] - The data fetched from Elasticsearch
     '''
     page: dict = client.search(
         index=index_name,
@@ -32,9 +37,11 @@ def get_scroll_id(client: Elasticsearch, index_name: str, scroll_time: str='10m'
             "match_all": {}
         }
     )
+    docs_to_read: int = page['hits']['total']['value']
     scroll_id: str = page['_scroll_id']
+    data: list[dict[str, Any]] = page['hits']['hits']
 
-    return scroll_id
+    return docs_to_read, scroll_id, data
 
 def data_handling(client: Elasticsearch, scroll_id: str, scroll_time: str='10m') -> Tuple[str, list[dict[str, Any]]]:
     '''
@@ -62,32 +69,43 @@ def export_to_csv(saving_dir: str, data: list[dict[str, Any]], file_count: int, 
             file_count: int - The number of the file (for the name)
             index_name: str - The index name for the file name
     '''
+    global DOCUMENT_READ
+    DOCUMENT_READ += len(data)
+
     df: pd.DataFrame = pd.json_normalize(data)
     df.to_csv(os.path.join(saving_dir, f'{index_name}.{file_count}.csv'))
 
-def thread_runner(client: Elasticsearch, batch_size: int) -> None:
+def thread_runner(client: Elasticsearch, index: str, scroll_time: str, batch_size: int) -> None:
     '''
         Thread logic
 
         args:
             client: Elasticsearch - Elasticsearch client
             batch_size: int - Number of documents to process in one request (in scroll)
+            scroll_time: str - How much time to save the scroll context
     '''
 
     global LAST_SCROLL_ID
-    global IS_LAST
+    global DOCUMENT_READ
+    global DOCUMENT_NEEDED
     global SCROLL_COUNT
 
-    if not IS_LAST:
+    if not LAST_SCROLL_ID:
+        DOCUMENT_NEEDED, LAST_SCROLL_ID, all_data = get_scroll_id(
+            client, index, 
+            scroll_time=scroll_time,
+            batch_size=batch_size
+        )
+    else:
         next_scroll_id, all_data = data_handling(client, LAST_SCROLL_ID)
+    
+    if len(all_data) > 0:
         export_to_csv(args.output, all_data, SCROLL_COUNT)
+        print('exported to .csv sucessfully')
 
         # Updating the scroll id
         LAST_SCROLL_ID = next_scroll_id
-        
-        # Check whether is the last scroll
-        IS_LAST = True if len(all_data) < batch_size else False
-        
+
         # Update counter
         SCROLL_COUNT += 1
 
@@ -97,31 +115,40 @@ def main(args: Arguments) -> None:
         args:
             args: Arguments - all the arguments passed from the user
     '''
-
+    starting_timestamp: int = time.time()
     print('args are:', args)
-    client = Elasticsearch(args.host or 'http://10.0.0.10:30000')
+    client = Elasticsearch(args.host)
     print('Elasticsearch client created successfully')
 
     os.makedirs(args.output, exist_ok=True)
-    print('Output directory created successfully')
+    print('Destenation folder verified')
 
     global LAST_SCROLL_ID
-    LAST_SCROLL_ID = get_scroll_id(client, args.index) 
-
-    # -----------------------------------------------------------------
-
+    global DOCUMENT_NEEDED
+    global DOCUMENT_READ
+    
     # Create thread per page and generate .csv file from it
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         futures: list = []
 
-        while not IS_LAST:
-            print('create new thread')
-            future = executor.submit(thread_runner, client, args.batch_size)
+        while (DOCUMENT_READ < DOCUMENT_NEEDED) or not LAST_SCROLL_ID:
+            print('Create new thread')
+            future = executor.submit(
+                thread_runner, client, 
+                args.index, 
+                scroll_time=args.scroll_time, 
+                batch_size=args.batch_size
+            )
             futures.append(future)
-            
+                
             sleep(.5)
-
+        
         wait(futures)
+        print(f'''
+            All process took: {(time.time() - starting_timestamp) / 1000}s 
+            by batch_size of: {args.batch_size}
+            with threads running concurrently: {args.max_workers}
+        ''')
         
 
 if __name__ == '__main__':
@@ -131,25 +158,37 @@ if __name__ == '__main__':
 
     parser.add_argument(
         '-i', '--index',
-        help='The elasticsearch index to scroll of'
+        help='The elasticsearch index to scroll of',
+        type=str
+        # required=True
     ) # Will be required
     parser.add_argument(
         '-o', '--output',
         default=os.path.join(os.curdir, 'output'),
+        type=str,
         help='Path of the directory to put all the .csv files'
     )
     parser.add_argument(
         '-eh', '--host',
         default='http://localhost:9200',
+        type=str,
         help='The elasticsearch host to export the index from'
+    )
+    parser.add_argument(
+        '-s', '--scroll-time',
+        default='1m',
+        type=str,
+        help='How much time to save the scroll context (in elasticsearch)'
     )
     parser.add_argument(
         '-bs', '--batch-size',
         default=1000,
+        type=int,
         help='How much documents to parse in each time'
     )
     parser.add_argument(
         '-mw', '--max-workers', default=10,
+        type=int,
         help='The maximum thread workers to execute concurrently'
     )
     

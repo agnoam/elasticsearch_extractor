@@ -7,3 +7,4 @@ class Arguments:
     max_workers: int
     batch_size: int
     output: str
+    scroll_time: str
