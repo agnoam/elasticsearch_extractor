@@ -141,12 +141,13 @@ def main(args: Arguments) -> None:
             )
             futures.append(future)
                 
-            sleep(.5)
+            sleep(args.thread_creation_sleep)
         
         wait(futures)
         print(f'''
             All process took: {(time.time() - starting_timestamp) / 1000}s 
             by batch_size of: {args.batch_size}
+            thread-sleep: {args.thread_creation_sleep} minutes
             with threads running concurrently: {args.max_workers}
         ''')
         
@@ -190,6 +191,12 @@ if __name__ == '__main__':
         '-mw', '--max-workers', default=10,
         type=int,
         help='The maximum thread workers to execute concurrently'
+    )
+    parser.add_argument(
+        '-ts', '--thread-creation-sleep',
+        type=float,
+        default=0.5,
+        help='How much time to wait between threads creation (in minutes)'
     )
     
     args: Arguments = parser.parse_args()

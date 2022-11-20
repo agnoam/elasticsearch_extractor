@@ -8,3 +8,4 @@ class Arguments:
     batch_size: int
     output: str
     scroll_time: str
+    thread_creation_sleep: float
