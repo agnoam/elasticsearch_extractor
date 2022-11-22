@@ -117,9 +117,8 @@ def main(args: Arguments) -> None:
     starting_timestamp: int = time.time()
     print('args are:', args)
     
-    if args.username or args.password:
-        assert args.username and args.password, 'Username and Password must be specified in together in case you use them'
-        client = Elasticsearch(args.host, http_auth=(args.username, args.password))
+    if args.creds_included:
+        client = Elasticsearch(args.host, verify_certs=True)
     else:
         client = Elasticsearch(args.host)
     
@@ -169,13 +168,9 @@ if __name__ == '__main__':
         required=True
     )
     parser.add_argument(
-        '-u', '--username',
-        help='The username to connect elasticsearch',
-        type=str
-    )
-    parser.add_argument(
-        '-p', '--password',
-        help='The password to connect elasticsearch',
+        '-c', '--creds-included',
+        help='''The username and password embedded in the host link. 
+        like: <http|s>://<username>:<password>@<host>:<port>''',
         type=str
     )
     parser.add_argument(
@@ -186,9 +181,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '-eh', '--host',
-        default='http://localhost:9200',
-        type=str,
-        help='The elasticsearch host to export the index from'
+        default=['http://localhost:9200'],
+        type=list[str],
+        help='The elasticsearch host to export the index from, make sure it is a list of hosts'
     )
     parser.add_argument(
         '-s', '--scroll-time',
