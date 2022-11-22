@@ -9,3 +9,5 @@ class Arguments:
     output: str
     scroll_time: str
     thread_creation_sleep: float
+    username: str
+    password: str

@@ -84,7 +84,6 @@ def thread_runner(client: Elasticsearch, index: str, scroll_time: str, batch_siz
             batch_size: int - Number of documents to process in one request (in scroll)
             scroll_time: str - How much time to save the scroll context
     '''
-
     global LAST_SCROLL_ID
     global DOCUMENT_READ
     global DOCUMENT_NEEDED
@@ -117,7 +116,13 @@ def main(args: Arguments) -> None:
     '''
     starting_timestamp: int = time.time()
     print('args are:', args)
-    client = Elasticsearch(args.host)
+    
+    if args.username or args.password:
+        assert args.username and args.password, 'Username and Password must be specified in together in case you use them'
+        client = Elasticsearch(args.host, http_auth=(args.username, args.password))
+    else:
+        client = Elasticsearch(args.host)
+    
     print('Elasticsearch client created successfully')
 
     os.makedirs(args.output, exist_ok=True)
@@ -160,9 +165,19 @@ if __name__ == '__main__':
     parser.add_argument(
         '-i', '--index',
         help='The elasticsearch index to scroll of',
+        type=str,
+        required=True
+    )
+    parser.add_argument(
+        '-u', '--username',
+        help='The username to connect elasticsearch',
         type=str
-        # required=True
-    ) # Will be required
+    )
+    parser.add_argument(
+        '-p', '--password',
+        help='The password to connect elasticsearch',
+        type=str
+    )
     parser.add_argument(
         '-o', '--output',
         default=os.path.join(os.curdir, 'output'),
