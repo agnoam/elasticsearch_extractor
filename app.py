@@ -7,13 +7,14 @@ from time import sleep
 
 from elasticsearch import Elasticsearch
 import pandas as pd
+from tqdm import tqdm
 
 from models.arguments import Arguments
 
 LAST_SCROLL_ID: str = None
 SCROLL_COUNT: int = 0
-DOCUMENT_NEEDED: int = -1
-DOCUMENT_READ: int = -1
+DOCUMENTS_NEEDED: int = -1
+DOCUMENTS_READ: int = -1
 
 def get_scroll_id(client: Elasticsearch, index_name: str, scroll_time: str='10m', batch_size: int=1000) -> Tuple[int, str, list[dict[str, Any]]]:
     '''
@@ -69,8 +70,11 @@ def export_to_csv(saving_dir: str, data: list[dict[str, Any]], file_count: int, 
             file_count: int - The number of the file (for the name)
             index_name: str - The index name for the file name
     '''
-    global DOCUMENT_READ
-    DOCUMENT_READ += len(data)
+    global DOCUMENTS_READ
+    if DOCUMENTS_READ == -1:
+        DOCUMENTS_READ = len(data)
+    else:
+        DOCUMENTS_READ += len(data)
 
     df: pd.DataFrame = pd.json_normalize(data)
     df.to_csv(os.path.join(saving_dir, f'{index_name}.{file_count}.csv'))
@@ -85,13 +89,13 @@ def thread_runner(client: Elasticsearch, index: str, scroll_time: str, batch_siz
             scroll_time: str - How much time to save the scroll context
     '''
     global LAST_SCROLL_ID
-    global DOCUMENT_READ
-    global DOCUMENT_NEEDED
+    global DOCUMENTS_READ
+    global DOCUMENTS_NEEDED
     global SCROLL_COUNT
 
     if not LAST_SCROLL_ID:
-        DOCUMENT_NEEDED, LAST_SCROLL_ID, all_data = get_scroll_id(
-            client, index, 
+        DOCUMENTS_NEEDED, LAST_SCROLL_ID, all_data = get_scroll_id(
+            client, index,
             scroll_time=scroll_time,
             batch_size=batch_size
         )
@@ -99,7 +103,7 @@ def thread_runner(client: Elasticsearch, index: str, scroll_time: str, batch_siz
         next_scroll_id, all_data = data_handling(client, LAST_SCROLL_ID)
     
     if len(all_data) > 0:
-        export_to_csv(args.output, all_data, SCROLL_COUNT)
+        export_to_csv(args.output, all_data, SCROLL_COUNT, index_name=index)
         print('exported to .csv sucessfully')
 
         # Updating the scroll id
@@ -107,6 +111,67 @@ def thread_runner(client: Elasticsearch, index: str, scroll_time: str, batch_siz
 
         # Update counter
         SCROLL_COUNT += 1
+
+def extract_absolute_indices(client: Elasticsearch, wildcarded_index_name: str) -> list[str]:
+    '''
+        Extract the absolute indices from the wildcarded index name
+
+        args:
+            wildcarded_index_name: str - The wildcarded index name
+
+        returns:
+            list[str] - The absolute indices
+    '''
+    extracted_indices_names: dict = client.indices.get_alias(wildcarded_index_name) # class 'dict_keys'
+    indices_list: list = list(extracted_indices_names.keys())
+    return indices_list
+
+def index_runner(client: Elasticsearch, index_name: str) -> None:
+    '''
+        Getting all the documents from an index and saves them into files
+        args:
+            client: Elasticsearch - Elasticsearch client object
+            index_name: str - Target index name to fetch
+    '''
+    print(f'Running on index: {index_name}')
+
+    global LAST_SCROLL_ID
+    global DOCUMENTS_NEEDED
+    global DOCUMENTS_READ
+
+    # Create thread per page and generate .csv file from it
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        futures: list = []
+
+        while (DOCUMENTS_READ < DOCUMENTS_NEEDED) or not LAST_SCROLL_ID:
+            print('Create new thread')
+            future = executor.submit(
+                thread_runner, client,
+                index_name,
+                scroll_time=args.scroll_time,
+                batch_size=args.batch_size
+            )
+            futures.append(future)
+                
+            sleep(args.thread_creation_sleep)
+        
+        wait(futures)
+        
+
+def reset_gloabl_variables() -> None:
+    '''
+        Reseting the global variables for new index to run
+    '''
+    global LAST_SCROLL_ID
+    global SCROLL_COUNT
+    global DOCUMENTS_NEEDED
+    global DOCUMENTS_READ
+
+    LAST_SCROLL_ID = None
+    SCROLL_COUNT = 0
+    DOCUMENTS_NEEDED = -1
+    DOCUMENTS_READ = -1
+
 
 def main(args: Arguments) -> None:
     '''
@@ -127,33 +192,19 @@ def main(args: Arguments) -> None:
     os.makedirs(args.output, exist_ok=True)
     print('Destenation folder verified')
 
-    global LAST_SCROLL_ID
-    global DOCUMENT_NEEDED
-    global DOCUMENT_READ
-    
-    # Create thread per page and generate .csv file from it
-    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures: list = []
+    # Extract the list of absolute indices names from the wildcard
+    indicies: list[str] = extract_absolute_indices(client, args.index)
+    for index_name in indicies:
+        reset_gloabl_variables()
+        index_runner(client, index_name)
 
-        while (DOCUMENT_READ < DOCUMENT_NEEDED) or not LAST_SCROLL_ID:
-            print('Create new thread')
-            future = executor.submit(
-                thread_runner, client, 
-                args.index, 
-                scroll_time=args.scroll_time, 
-                batch_size=args.batch_size
-            )
-            futures.append(future)
-                
-            sleep(args.thread_creation_sleep)
-        
-        wait(futures)
-        print(f'''
-            All process took: {(time.time() - starting_timestamp) / 1000}s 
-            by batch_size of: {args.batch_size}
-            thread-sleep: {args.thread_creation_sleep} minutes
-            with threads running concurrently: {args.max_workers}
-        ''')
+    print(f'''
+        All process took: {(time.time() - starting_timestamp) / 1000}s 
+        by batch_size of: {args.batch_size}
+        thread-sleep: {args.thread_creation_sleep} seconds
+        with threads running concurrently: {args.max_workers}
+    ''')
+    
         
 
 if __name__ == '__main__':
@@ -165,7 +216,7 @@ if __name__ == '__main__':
         '-i', '--index',
         help='The elasticsearch index to scroll of',
         type=str,
-        required=True
+        # required=True
     )
     parser.add_argument(
         '-c', '--creds-included',
@@ -206,7 +257,7 @@ if __name__ == '__main__':
         '-ts', '--thread-creation-sleep',
         type=float,
         default=0.5,
-        help='How much time to wait between threads creation (in minutes)'
+        help='How much time to wait between threads creation (in seconds)'
     )
     
     args: Arguments = parser.parse_args()
